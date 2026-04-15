@@ -93,10 +93,39 @@ return score;
 function calculateLostMatch(lost, found) {
 let score = 0;
 
-if (lost.itemName?.toLowerCase() === found.itemName?.toLowerCase()) score += 30;
-if (lost.model?.toLowerCase() === found.model?.toLowerCase()) score += 20;
+if (lost.itemName?.toLowerCase() === found.itemName?.toLowerCase()) score += 15;
+
+if (lost.model && found.model) {
+if (lost.model.toLowerCase() === found.model.toLowerCase()) score += 15;
+else if (
+lost.model.toLowerCase().includes(found.model.toLowerCase()) ||
+found.model.toLowerCase().includes(lost.model.toLowerCase())
+) score += 10;
+}
+
 if (lost.location?.toLowerCase() === found.location?.toLowerCase()) score += 20;
-if (lost.date === found.date) score += 15;
+
+if (lost.date && found.date) {
+const d1 = new Date(lost.date);
+const d2 = new Date(found.date);
+const diffDays = Math.abs((d1 - d2) / (1000 * 60 * 60 * 24));
+
+if (diffDays === 0) score += 15;
+else if (diffDays <= 2) score += 8;
+}
+
+if (lost.description && found.description) {
+const lDesc = lost.description.toLowerCase();
+const fDesc = found.description.toLowerCase();
+
+let matchWords = 0;
+
+lDesc.split(" ").forEach(word => {
+if (word.length > 3 && fDesc.includes(word)) matchWords++;
+});
+
+score += Math.min(matchWords * 2, 20);
+}
 
 return score;
 }
@@ -120,6 +149,7 @@ lostItems.push({ id: doc.id, ...doc.data() });
 
 let results = [];
 
+/* ✅ CLAIM LOOP */
 claimSnap.forEach((d) => {
 const data = d.data();
 
@@ -138,18 +168,14 @@ if (score > bestLostMatch) bestLostMatch = score;
 });
 
 lostItems.forEach(lost => {
-
 if (lost.itemName?.toLowerCase() !== data.itemName?.toLowerCase()) return;
 
 foundItems.forEach(found => {
-
 if (found.itemName?.toLowerCase() !== data.itemName?.toLowerCase()) return;
 
 const score = calculateLostMatch(lost, found);
-
 if (score > bestLostFound) bestLostFound = score;
 });
-
 });
 
 results.push({
@@ -162,12 +188,44 @@ lostFound: bestLostFound
 
 });
 
+/* ✅ AUTO LOST vs FOUND (CORRECT PLACE) */
+lostItems.forEach(lost => {
+foundItems.forEach(found => {
+
+if (lost.itemName?.toLowerCase() !== found.itemName?.toLowerCase()) return;
+
+const score = calculateLostMatch(lost, found);
+
+if (score >= 30) {
+results.push({
+id: "auto_" + lost.id + "_" + found.id,
+
+itemName: lost.itemName,
+name: lost.name,
+phno: lost.phno || "N/A",
+email: lost.email || "N/A",
+roll: lost.roll || "N/A",
+location: lost.location,
+
+match: 0,
+lostMatch: 0,
+lostFound: score,
+
+status: "pending",
+
+image: lost.image || found.image
+});
+}
+
+});
+});
+
 results.sort((a, b) => b.match - a.match);
 
 container.innerHTML = "";
 
 if (results.length === 0) {
-container.innerHTML = `<p class="text-center text-gray-600">No claims</p>`;  
+container.innerHTML = `<p class="text-center text-gray-600">No claims</p>`;
 return;
 }
 
@@ -178,46 +236,15 @@ card.className = "bg-white p-6 rounded-2xl shadow-lg border border-gray-200 hove
 
 let imageUrl = "";
 
-if (data.image) {
-  imageUrl = data.image;
+if (data.image) imageUrl = data.image;
+
+if (!imageUrl && data.itemId) {
+const foundItem = foundItems.find(f => f.id === data.itemId);
+if (foundItem && foundItem.image) imageUrl = foundItem.image;
 }
 
 if (!imageUrl) {
-  let bestFound = null;
-  let bestScore = 0;
-
-  foundItems.forEach(item => {
-    const score = calculateMatch(data, item);
-    if (score > bestScore && item.image) {
-      bestScore = score;
-      bestFound = item;
-    }
-  });
-
-  if (bestFound) {
-    imageUrl = bestFound.image;
-  }
-}
-
-if (!imageUrl) {
-  let bestLost = null;
-  let bestScore = 0;
-
-  lostItems.forEach(item => {
-    const score = calculateLostMatch(data, item);
-    if (score > bestScore && item.image) {
-      bestScore = score;
-      bestLost = item;
-    }
-  });
-
-  if (bestLost) {
-    imageUrl = bestLost.image;
-  }
-}
-
-if (!imageUrl) {
-  imageUrl = "https://via.placeholder.com/300x200?text=No+Image";
+imageUrl = "https://via.placeholder.com/300x200?text=No+Image";
 }
 
 card.innerHTML = `
@@ -251,46 +278,33 @@ card.innerHTML = `
 `;
 
 card.querySelector(".approve").onclick = async () => {
+await updateDoc(doc(db, "claims", data.id), { status: "handed_over" });
 
-  await updateDoc(doc(db, "claims", data.id), {
-    status: "handed_over"
-  });
+if (data.itemId) {
+await updateDoc(doc(db, "foundItems", data.itemId), { status: "claimed" });
+}
 
-  if (data.itemId) {
-    await updateDoc(doc(db, "foundItems", data.itemId), {
-      status: "claimed"
-    });
-  }
+emailjs.send("service_abc123", "template_fim8m66", {
+name: data.name,
+item: data.itemName,
+to_email: data.email
+});
 
-  emailjs.send("service_abc123", "template_fim8m66", {
-    name: data.name,
-    item: data.itemName,
-    to_email: data.email
-  });
-
-  card.querySelector(".actions").style.display = "none";
-
-  alert("Item handed over & Email sent ✅");
-
-  loadClaims();
+alert("Item handed over & Email sent ✅");
+loadClaims();
 };
 
 card.querySelector(".reject").onclick = async () => {
+await updateDoc(doc(db, "claims", data.id), { status: "rejected" });
 
-  await updateDoc(doc(db, "claims", data.id), {
-    status: "rejected"
-  });
-
-  card.querySelector(".actions").style.display = "none";
-
-  alert("Claim rejected ❌");
-
-  loadClaims();
+alert("Claim rejected ❌");
+loadClaims();
 };
 
 container.appendChild(card);
 
 });
+
 }
 </script>
 
